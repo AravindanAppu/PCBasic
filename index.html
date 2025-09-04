@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pyodide + PC-BASIC (Prototype)</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;display:flex;flex-direction:column;height:100vh;margin:0}
+    header{padding:12px;background:#0b63a6;color:white}
+    main{flex:1;display:grid;grid-template-columns:1fr 360px;gap:8px;padding:8px}
+    .panel{background:#f6f8fa;border-radius:8px;padding:8px;display:flex;flex-direction:column}
+    #term{background:#0b0b0b;color:#e6e6e6;padding:8px;height:100%;overflow:auto;font-family:monospace;border-radius:6px}
+    #inputRow{display:flex;gap:6px;margin-top:8px}
+    textarea#cmd{flex:1;height:80px;font-family:monospace}
+    button{padding:8px 10px;border-radius:6px;border:1px solid #ccc;background:white;cursor:pointer}
+    .kbd{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    .kbd button{min-width:48px}
+    footer{padding:8px;font-size:13px;color:#555}
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Pyodide + PC-BASIC — Prototype</strong>
+    <div style="font-size:13px;opacity:.9">Loads Pyodide in-page and attempts to install <code>pcbasic</code>. Use the console to see messages.</div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div id="term" aria-live="polite">Loading Pyodide...</div>
+
+      <div id="inputRow">
+        <textarea id="cmd" placeholder="Type BASIC commands or a small program here (eg. PRINT \"HELLO\")"></textarea>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button id="send">Send</button>
+          <button id="runfile">Run uploaded .BAS</button>
+          <input id="file" type="file" accept=".bas,.txt" style="display:none" />
+          <button id="clear">Clear</button>
+        </div>
+      </div>
+
+      <div class="kbd">
+        <!-- BASIC-friendly keys -->
+        <button data-insert="RUN">RUN</button>
+        <button data-insert="LIST">LIST</button>
+        <button data-insert="NEW">NEW</button>
+        <button data-insert="SAVE \"PROG.BAS\"">SAVE "PROG.BAS"</button>
+        <button data-insert="LOAD \"PROG.BAS\"">LOAD "PROG.BAS"</button>
+        <button data-insert="PRINT \"\"">PRINT ""</button>
+        <button data-insert="GOTO ">GOTO </button>
+        <button data-insert="IF ">IF </button>
+        <button data-insert="FOR ">FOR </button>
+        <button data-insert="NEXT">NEXT</button>
+      </div>
+
+    </section>
+
+    <aside class="panel">
+      <h4>Controls</h4>
+      <p style="margin:6px 0">Status: <span id="status">starting</span></p>
+      <button id="install">Install/Refresh pcbasic</button>
+      <button id="openConsole">Open Dev Console</button>
+
+      <h4 style="margin-top:12px">Printer / LPT</h4>
+      <p style="margin:6px 0">Output printed by the BASIC program will be captured to a 'printer buffer' you can download or send to the system print dialog.</p>
+      <button id="downloadPrint">Download Print File</button>
+      <button id="printPDF">Open Print Dialog</button>
+
+      <h4 style="margin-top:12px">Notes</h4>
+      <ul>
+        <li>This is a prototype. Some environments may not allow direct tty-style apps to run in Pyodide without adaptation.</li>
+        <li>Check the browser console for diagnostic logs.</li>
+      </ul>
+    </aside>
+  </main>
+
+  <footer>
+    Prototype created for Aravindan — try installing <code>pcbasic</code> via micropip. If it works we can wire a nicer terminal and full LPT emulation.
+  </footer>
+
+  <script>
+    // CDN location - adjust version if you want a different Pyodide release
+    const PYODIDE_CDN = 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js';
+
+    let pyodide = null;
+    let printerBuffer = '';
+
+    const term = document.getElementById('term');
+    const statusEl = document.getElementById('status');
+    const cmd = document.getElementById('cmd');
+
+    function logToTerm(...parts){
+      const txt = parts.join(' ');
+      term.textContent += '\n' + txt;
+      term.scrollTop = term.scrollHeight;
+      console.log(txt);
+    }
+
+    async function loadPyodideAndPackages(){
+      statusEl.textContent = 'loading pyodide';
+      logToTerm('Loading Pyodide from', PYODIDE_CDN);
+      await loadScript(PYODIDE_CDN);
+      pyodide = await loadPyodide({indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.4/full/'});
+      statusEl.textContent = 'pyodide loaded';
+      logToTerm('Pyodide loaded — installing micropip');
+      await pyodide.loadPackage('micropip');
+      statusEl.textContent = 'ready';
+      logToTerm('Ready. Click "Install/Refresh pcbasic" to install the Python package.');
+    }
+
+    function loadScript(src){
+      return new Promise((resolve,reject)=>{
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    async function installPcbasic(){
+      if(!pyodide) return alert('Pyodide not loaded');
+      statusEl.textContent = 'installing pcbasic';
+      logToTerm('Installing pcbasic (micropip)... this may take a while');
+      try{
+        await pyodide.runPythonAsync(`
+import micropip
+await micropip.install('pcbasic')
+`);
+        statusEl.textContent = 'pcbasic installed';
+        logToTerm('pcbasic installed. Attempting import...');
+        await pyodide.runPythonAsync(`import pcbasic; print('pcbasic v', pcbasic.__version__)`);
+        const ver = await pyodide.runPythonAsync("getattr(__import__('pcbasic'), '__version__', 'unknown')");
+        logToTerm('pcbasic version: ' + ver);
+      }catch(e){
+        console.error(e);
+        logToTerm('Error installing or importing pcbasic — see console for details');
+        statusEl.textContent = 'install error';
+      }
+    }
+
+    // Attempt to run a simple BASIC snippet by using pcbasic's API if available.
+    // We'll try a few fallbacks so the prototype is forgiving.
+    async function runBasic(code){
+      if(!pyodide) return logToTerm('Pyodide not ready');
+      logToTerm('Running BASIC snippet...');
+      // push code to a printer buffer by setting a global Python function that appends to JS
+      pyodide.globals.set('js_printer_append', (s)=>{ printerBuffer += s + '\n'; });
+
+      const python = `
+import sys
+out_stream = sys.stdout
+err_stream = sys.stderr
+
+# Helper: small wrapper to capture print calls from pcbasic if it supports passing file-like objects
+class JSPrinter:
+    def write(self, s):
+        try:
+            js_printer_append(s)
+        except Exception:
+            pass
+    def flush(self):
+        pass
+
+sys.stdout = JSPrinter()
+sys.stderr = JSPrinter()
+
+# Try known pcbasic entrypoints
+try:
+    import pcbasic
+    # try to use a high-level runner if present
+    if hasattr(pcbasic, 'run_string'):
+        pcbasic.run_string('''${escapeTemplate(code)}''')
+    elif hasattr(pcbasic, 'run'):  # fallback api
+        pcbasic.run('''${escapeTemplate(code)}''')
+    else:
+        # best-effort: try running the module as a script
+        import runpy
+        runpy.run_module('pcbasic', run_name='__main__')
+except Exception as e:
+    print('pcbasic run error:', e)
+`;
+
+      try{
+        await pyodide.runPythonAsync(python);
+        logToTerm('Execution finished (check printer buffer for output).');
+      }catch(err){
+        console.error(err);
+        logToTerm('Runtime error while executing BASIC — see console.');
+      }
+    }
+
+    // helpers
+    function escapeTemplate(s){
+      // simple escaping for embedding into Python triple-quoted string
+      return s.replace(/\\/g,'\\\\').replace(/'''/g,"\\'\\'\\'");
+    }
+
+    document.getElementById('install').addEventListener('click', installPcbasic);
+    document.getElementById('send').addEventListener('click', ()=>runBasic(cmd.value));
+    document.getElementById('clear').addEventListener('click', ()=>{term.textContent=''; printerBuffer='';});
+    document.getElementById('openConsole').addEventListener('click', ()=>console.open?console.open():console.log('open console'));
+
+    document.querySelectorAll('.kbd button').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const ins = b.getAttribute('data-insert') || '';
+        const el = cmd;
+        const start = el.selectionStart||0;
+        const end = el.selectionEnd||0;
+        el.value = el.value.slice(0,start) + ins + el.value.slice(end);
+        el.focus();
+        el.selectionStart = start + ins.length;
+        el.selectionEnd = start + ins.length;
+      });
+    });
+
+    // file upload/run
+    const fileInput = document.getElementById('file');
+    document.getElementById('runfile').addEventListener('click', ()=>fileInput.click());
+    fileInput.addEventListener('change', async (ev)=>{
+      const f = ev.target.files[0];
+      if(!f) return;
+      const txt = await f.text();
+      logToTerm('Uploaded file: ' + f.name);
+      await runBasic(txt);
+    });
+
+    // printer actions
+    document.getElementById('downloadPrint').addEventListener('click', ()=>{
+      const blob = new Blob([printerBuffer], {type:'text/plain'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'LPT1_print.txt';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById('printPDF').addEventListener('click', ()=>{
+      // open a new window and write the printerBuffer into it then call print()
+      const w = window.open('','_blank');
+      if(!w) return alert('Popup blocked — allow popups to use print dialog');
+      w.document.body.style.whiteSpace = 'pre-wrap';
+      w.document.body.textContent = printerBuffer || '(printer buffer empty)';
+      w.focus();
+      setTimeout(()=>{ w.print(); }, 300);
+    });
+
+    // start loading pyodide
+    loadPyodideAndPackages().catch(e=>{ console.error(e); logToTerm('Failed to load Pyodide: '+e); statusEl.textContent='load error' });
+  </script>
+</body>
+</html>
